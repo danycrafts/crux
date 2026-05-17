@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danycrafts/crux/pkg/logger"
 	"github.com/danycrafts/crux/services/daemon/internal/config"
 	"github.com/danycrafts/crux/services/daemon/internal/discovery"
 	"github.com/danycrafts/crux/services/daemon/internal/gateway"
@@ -19,18 +20,18 @@ import (
 )
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
+	CheckOrigin:      func(r *http.Request) bool { return true },
+	ReadBufferSize:   1024,
+	WriteBufferSize:  1024,
 }
 
 // Server is the HTTP API for the daemon.
 type Server struct {
-	cfg      *config.Config
-	store    *store.Store
-	runner   *runner.SessionRunner
-	mux      *http.ServeMux
-	srv      *http.Server
+	cfg    *config.Config
+	store  *store.Store
+	runner *runner.SessionRunner
+	mux    *http.ServeMux
+	srv    *http.Server
 }
 
 // NewServer creates the API server.
@@ -53,8 +54,12 @@ func NewServer(cfg *config.Config, st *store.Store) *Server {
 	mux.HandleFunc("GET /sessions/{id}", s.handleGetSession)
 	mux.HandleFunc("GET /sessions/{id}/logs", s.handleSessionLogs)
 	mux.HandleFunc("GET /sessions/{id}/events", s.handleSessionEvents)
+	mux.HandleFunc("GET /sessions/{id}/summary", s.handleSessionSummary)
+	mux.HandleFunc("POST /sessions/{id}/replay", s.handleSessionReplay)
 	mux.HandleFunc("POST /sessions/{id}/continue", s.handleContinueSession)
 	mux.HandleFunc("GET /mcp/servers", s.handleMCPList)
+	mux.HandleFunc("GET /mcp/tools", s.handleMCPTools)
+	mux.HandleFunc("GET /mcp/calls", s.handleMCPCalls)
 	mux.HandleFunc("POST /mcp/generate", s.handleMCPGenerate)
 	mux.HandleFunc("GET /mcp/policy", s.handleMCPPolicy)
 	mux.HandleFunc("POST /mcp/policy", s.handleMCPPolicyUpdate)
@@ -82,9 +87,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
+	logger.Info("discovering agents")
 	found := discovery.Discover(r.Context())
 	for _, a := range found {
-		caps, _ := json.Marshal(a.Capabilities)
 		_ = s.store.UpsertAgent(r.Context(), &store.Agent{
 			ID:           slug(a.Name),
 			Name:         a.Name,
@@ -94,7 +99,6 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 			Capabilities: a.Capabilities,
 			Status:       "available",
 		})
-		_ = caps
 	}
 	respondJSON(w, map[string]interface{}{"agents": found, "mcp": discovery.DiscoverMCP(r.Context())})
 }
@@ -102,6 +106,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	agents, err := s.store.ListAgents(r.Context())
 	if err != nil {
+		logger.Error("list agents failed", "err", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -125,12 +130,13 @@ func (s *Server) handleRunAgent(w http.ResponseWriter, r *http.Request) {
 	workDir := discovery.WorkingDir(req.Repo)
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	handle, err := s.runner.StartSession(ctx, agentID, req.Session, workDir, req.Env)
+	_, err := s.runner.StartSession(ctx, agentID, req.Session, workDir, req.Env)
 	if err != nil {
+		logger.Error("run agent failed", "agent", agentID, "err", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	_ = handle
+	logger.Info("session started", "session", req.Session, "agent", agentID)
 	respondJSON(w, map[string]interface{}{
 		"session_id": req.Session,
 		"agent_id":   agentID,
@@ -174,15 +180,11 @@ func (s *Server) handleSessionAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer ws.Close()
+	logger.Info("websocket attached", "session", sessionID)
 
-	// Subscribe to stdout broadcast
 	stdoutCh := br.Subscribe()
-	defer func() {
-		// unsubscribing is best-effort in MVP
-		_ = stdoutCh
-	}()
+	defer func() { _ = stdoutCh }()
 
-	// Writer goroutine: stdout -> websocket
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -193,7 +195,6 @@ func (s *Server) handleSessionAttach(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Reader goroutine: websocket -> stdin
 	go func() {
 		for {
 			mt, data, err := ws.ReadMessage()
@@ -207,6 +208,7 @@ func (s *Server) handleSessionAttach(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	<-done
+	logger.Info("websocket detached", "session", sessionID)
 }
 
 func (s *Server) handleSessionResize(w http.ResponseWriter, r *http.Request) {
@@ -243,6 +245,7 @@ func (s *Server) handleSessionStop(w http.ResponseWriter, r *http.Request) {
 		Status:  "stopped",
 		EndedAt: &end,
 	})
+	logger.Info("session stopped", "session", sessionID)
 	respondJSON(w, map[string]string{"status": "stopped"})
 }
 
@@ -286,6 +289,86 @@ func (s *Server) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, events)
 }
 
+func (s *Server) handleSessionSummary(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+	sess, err := s.store.GetSession(r.Context(), sessionID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	lines, err := s.store.GetTranscript(r.Context(), sessionID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var out strings.Builder
+	out.WriteString(fmt.Sprintf("Session: %s\nAgent: %s\nStatus: %s\nStarted: %s\n\n",
+		sess.ID, sess.AgentID, sess.Status, sess.StartedAt.Format(time.RFC3339)))
+	if sess.Summary != "" {
+		out.WriteString(fmt.Sprintf("Summary: %s\n\n", sess.Summary))
+	}
+	out.WriteString("Transcript:\n")
+	for _, l := range lines {
+		prefix := "[OUT]"
+		if l.IsInput {
+			prefix = "[IN]"
+		}
+		out.WriteString(fmt.Sprintf("%s %s\n", prefix, l.Line))
+	}
+	_ = s.store.UpdateSessionSummary(r.Context(), sessionID, out.String())
+	respondJSON(w, map[string]string{"summary": out.String()})
+}
+
+func (s *Server) handleSessionReplay(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+	var req struct {
+		Speed float64 `json:"speed"` // multiplier, default 1.0
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.Speed <= 0 {
+		req.Speed = 1.0
+	}
+
+	lines, err := s.store.GetTranscript(r.Context(), sessionID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Build replay with artificial delays based on timestamps
+	type replayLine struct {
+		DelayMs int    `json:"delay_ms"`
+		Line    string `json:"line"`
+		IsInput bool   `json:"is_input"`
+	}
+
+	var replay []replayLine
+	var lastTime *time.Time
+	for _, l := range lines {
+		delay := 0
+		if lastTime != nil {
+			d := int(l.CreatedAt.Sub(*lastTime).Milliseconds())
+			if d > 5000 {
+				d = 5000 // cap delay at 5s for replay
+			}
+			delay = int(float64(d) / req.Speed)
+		}
+		lastTime = &l.CreatedAt
+		replay = append(replay, replayLine{
+			DelayMs: delay,
+			Line:    l.Line,
+			IsInput: l.IsInput,
+		})
+	}
+
+	respondJSON(w, map[string]interface{}{
+		"session_id": sessionID,
+		"speed":      req.Speed,
+		"lines":      replay,
+	})
+}
+
 func (s *Server) handleContinueSession(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
 	var req struct {
@@ -322,7 +405,6 @@ func (s *Server) handleContinueSession(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = handle
 
-	// Inject continuation prompt
 	_ = s.runner.SendInput(r.Context(), newSessID, handle, []byte(continuation+"\n"))
 
 	respondJSON(w, map[string]interface{}{
@@ -347,6 +429,29 @@ func (s *Server) handleMCPList(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, out)
 }
 
+func (s *Server) handleMCPTools(w http.ResponseWriter, r *http.Request) {
+	// MVP: return tools from known MCP server configs
+	var tools []map[string]interface{}
+	for name := range s.cfg.MCP.Servers {
+		tools = append(tools, map[string]interface{}{
+			"name":        name + ".read",
+			"server":      name,
+			"description": "Tool provided by " + name,
+		})
+	}
+	respondJSON(w, tools)
+}
+
+func (s *Server) handleMCPCalls(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("session")
+	calls, err := s.store.ListMCPCalls(r.Context(), sessionID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	respondJSON(w, calls)
+}
+
 func (s *Server) handleMCPGenerate(w http.ResponseWriter, r *http.Request) {
 	path, err := gateway.GenerateConfig(s.cfg, filepath.Join(s.cfg.DataDir, "gateway"))
 	if err != nil {
@@ -368,6 +473,7 @@ func (s *Server) handleMCPPolicyUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cfg.Policies = &p
 	_ = s.cfg.Save(config.ConfigPath())
+	logger.Info("mcp policy updated")
 	respondJSON(w, s.cfg.Policies)
 }
 

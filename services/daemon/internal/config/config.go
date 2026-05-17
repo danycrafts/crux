@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/danycrafts/crux/pkg/logger"
 	"gopkg.in/yaml.v3"
 )
 
@@ -16,6 +17,7 @@ type Config struct {
 	AgentRegistry *AgentRegistry `yaml:"agents,omitempty"`
 	MCP           *MCPConfig     `yaml:"mcp,omitempty"`
 	Policies      *Policies      `yaml:"policies,omitempty"`
+	Logging       logger.Config  `yaml:"logging"`
 }
 
 // AgentRegistry holds known agents.
@@ -69,6 +71,7 @@ func Default() *Config {
 			Servers: make(map[string]MCPServer),
 		},
 		Policies: &Policies{},
+		Logging:  logger.DefaultConfig(),
 	}
 }
 
@@ -107,6 +110,7 @@ func Load(path string) (*Config, error) {
 	if cfg.Policies == nil {
 		cfg.Policies = &Policies{}
 	}
+	cfg.Logging = mergeLogConfig(cfg.Logging)
 	return &cfg, nil
 }
 
@@ -147,11 +151,31 @@ func DBPath() string {
 
 // EnsureDirs creates the data directory structure.
 func (c *Config) EnsureDirs() error {
-	for _, sub := range []string{"", "transcripts", "gateway"} {
+	for _, sub := range []string{"", "transcripts", "gateway", "logs"} {
 		p := filepath.Join(c.DataDir, sub)
 		if err := os.MkdirAll(p, 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", p, err)
 		}
 	}
 	return nil
+}
+
+func mergeLogConfig(cfg logger.Config) logger.Config {
+	def := logger.DefaultConfig()
+	if cfg.Level == "" {
+		cfg.Level = def.Level
+	}
+	if cfg.Format == "" {
+		cfg.Format = def.Format
+	}
+	if cfg.MaxSize == 0 {
+		cfg.MaxSize = def.MaxSize
+	}
+	if cfg.MaxBackups == 0 {
+		cfg.MaxBackups = def.MaxBackups
+	}
+	if cfg.MaxAge == 0 {
+		cfg.MaxAge = def.MaxAge
+	}
+	return cfg
 }

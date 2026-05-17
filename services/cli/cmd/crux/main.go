@@ -1,14 +1,20 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/danycrafts/crux/pkg/logger"
 	"github.com/danycrafts/crux/services/cli/internal/attach"
 	"github.com/danycrafts/crux/services/cli/internal/client"
+	cliconfig "github.com/danycrafts/crux/services/cli/internal/config"
 	"golang.org/x/term"
 )
+
+var cfg *cliconfig.Config
 
 func main() {
 	if len(os.Args) < 2 {
@@ -18,7 +24,25 @@ func main() {
 	cmd := os.Args[1]
 	args := os.Args[2:]
 
-	c := client.New(os.Getenv("CRUX_API_URL"))
+	var err error
+	cfg, err = cliconfig.Load(cliconfig.Path())
+	if err != nil {
+		cfg = cliconfig.Default()
+	}
+
+	// Override from env
+	if u := os.Getenv("CRUX_API_URL"); u != "" {
+		cfg.APIURL = u
+	}
+
+	// Initialize logging
+	logCfg := cfg.Logging
+	if logCfg.File == "" {
+		logCfg.ToStdout = false // CLI only logs to stderr for errors
+	}
+	logger.Init(logCfg)
+
+	c := client.New(cfg.APIURL)
 
 	switch cmd {
 	case "version":
@@ -39,10 +63,14 @@ func main() {
 		runLogs(c, args)
 	case "replay":
 		runReplay(c, args)
+	case "summarize":
+		runSummarize(c, args)
 	case "continue":
 		runContinue(c, args)
 	case "mcp":
 		runMCP(c, args)
+	case "config":
+		runConfig(args)
 	case "stats", "ps":
 		runStats(c)
 	case "daemon":
@@ -70,9 +98,11 @@ Commands:
   attach <session>    Attach to a running session
   sessions            List sessions
   logs <session>      Show session transcript
-  replay <session>    Replay session output
+  replay <session>    Replay session output with timing
+  summarize <session> Generate session summary
   continue <session>  Continue session with another agent
-  mcp <subcommand>    MCP gateway commands (list, policy)
+  mcp <subcommand>    MCP gateway commands (list, tools, calls, policy)
+  config              View or set CLI configuration
   stats               Show aggregate stats
   daemon <action>     Start or stop the local daemon
   version             Print version
@@ -94,7 +124,7 @@ func runInit(c *client.Client) {
 func runDiscover(c *client.Client) {
 	out, err := c.Discover()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "discover error: %v\n", err)
+		logger.Error("discover failed", "err", err)
 		os.Exit(1)
 	}
 	fmt.Println("Found agents:")
@@ -114,7 +144,7 @@ func runDiscover(c *client.Client) {
 func runAgents(c *client.Client) {
 	agents, err := c.ListAgents()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "agents error: %v\n", err)
+		logger.Error("list agents failed", "err", err)
 		os.Exit(1)
 	}
 	fmt.Printf("%-20s %-12s %-12s %-20s %s\n", "ID", "TYPE", "PROVIDER", "COMMAND", "STATUS")
@@ -129,7 +159,7 @@ func runRun(c *client.Client, args []string) {
 		os.Exit(1)
 	}
 	agentID := args[0]
-	repo := ""
+	repo := cfg.DefaultRepo
 	for i := 1; i < len(args); i++ {
 		if args[i] == "--repo" && i+1 < len(args) {
 			repo = args[i+1]
@@ -138,7 +168,7 @@ func runRun(c *client.Client, args []string) {
 	}
 	out, err := c.RunAgent(agentID, repo, "")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "run error: %v\n", err)
+		logger.Error("run failed", "err", err)
 		os.Exit(1)
 	}
 	sessionID, _ := out["session_id"].(string)
@@ -147,11 +177,11 @@ func runRun(c *client.Client, args []string) {
 
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		if err := attach.Session(c, sessionID); err != nil {
-			fmt.Fprintf(os.Stderr, "attach error: %v\n", err)
+			logger.Error("attach failed", "err", err)
 		}
 	} else {
 		if err := attach.SessionNonInteractive(c, sessionID); err != nil {
-			fmt.Fprintf(os.Stderr, "attach error: %v\n", err)
+			logger.Error("attach failed", "err", err)
 		}
 	}
 }
@@ -165,11 +195,11 @@ func runAttach(c *client.Client, args []string) {
 	fmt.Fprintf(os.Stderr, "Attaching to session %s... (Ctrl-C to detach)\n", sessionID)
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		if err := attach.Session(c, sessionID); err != nil {
-			fmt.Fprintf(os.Stderr, "attach error: %v\n", err)
+			logger.Error("attach failed", "err", err)
 		}
 	} else {
 		if err := attach.SessionNonInteractive(c, sessionID); err != nil {
-			fmt.Fprintf(os.Stderr, "attach error: %v\n", err)
+			logger.Error("attach failed", "err", err)
 		}
 	}
 }
@@ -184,7 +214,7 @@ func runSessions(c *client.Client, args []string) {
 	}
 	sessions, err := c.ListSessions(limit)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "sessions error: %v\n", err)
+		logger.Error("list sessions failed", "err", err)
 		os.Exit(1)
 	}
 	fmt.Printf("%-16s %-16s %-12s %-8s %-10s %s\n", "SESSION", "AGENT", "STATUS", "COST", "TOOLS", "STARTED")
@@ -200,7 +230,7 @@ func runLogs(c *client.Client, args []string) {
 	}
 	lines, err := c.SessionLogs(args[0])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "logs error: %v\n", err)
+		logger.Error("logs failed", "err", err)
 		os.Exit(1)
 	}
 	for _, l := range lines {
@@ -214,21 +244,48 @@ func runLogs(c *client.Client, args []string) {
 
 func runReplay(c *client.Client, args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: crux replay <session-id>")
+		fmt.Fprintln(os.Stderr, "usage: crux replay <session-id> [--speed <multiplier>]")
 		os.Exit(1)
 	}
-	lines, err := c.SessionLogs(args[0])
+	sessionID := args[0]
+	speed := 1.0
+	for i := 1; i < len(args); i++ {
+		if args[i] == "--speed" && i+1 < len(args) {
+			fmt.Sscanf(args[i+1], "%f", &speed)
+			i++
+		}
+	}
+	data, err := c.SessionReplay(sessionID, speed)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "replay error: %v\n", err)
+		logger.Error("replay failed", "err", err)
 		os.Exit(1)
 	}
-	for _, l := range lines {
+	lines, _ := data["lines"].([]interface{})
+	for _, item := range lines {
+		line, _ := item.(map[string]interface{})
+		delay, _ := line["delay_ms"].(float64)
+		if delay > 0 {
+			time.Sleep(time.Duration(delay) * time.Millisecond)
+		}
 		prefix := "[OUT]"
-		if b, ok := l["is_input"].(bool); ok && b {
+		if b, _ := line["is_input"].(bool); b {
 			prefix = "[IN]"
 		}
-		fmt.Printf("%s %s\n", prefix, l["line"])
+		fmt.Printf("%s %s", prefix, line["line"])
 	}
+}
+
+func runSummarize(c *client.Client, args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: crux summarize <session-id>")
+		os.Exit(1)
+	}
+	out, err := c.SessionSummary(args[0])
+	if err != nil {
+		logger.Error("summarize failed", "err", err)
+		os.Exit(1)
+	}
+	fmt.Println(out["summary"])
 }
 
 func runContinue(c *client.Client, args []string) {
@@ -250,7 +307,7 @@ func runContinue(c *client.Client, args []string) {
 	}
 	out, err := c.ContinueSession(sessionID, withAgent)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "continue error: %v\n", err)
+		logger.Error("continue failed", "err", err)
 		os.Exit(1)
 	}
 	fmt.Printf("Continued session %s -> %s with %s\n", sessionID, out["new_session"], withAgent)
@@ -258,7 +315,7 @@ func runContinue(c *client.Client, args []string) {
 
 func runMCP(c *client.Client, args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: crux mcp <list|policy|generate>")
+		fmt.Fprintln(os.Stderr, "usage: crux mcp <list|tools|calls|policy|generate>")
 		os.Exit(1)
 	}
 	sub := args[0]
@@ -266,11 +323,38 @@ func runMCP(c *client.Client, args []string) {
 	case "list":
 		servers, err := c.MCPList()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "mcp list error: %v\n", err)
+			logger.Error("mcp list failed", "err", err)
 			os.Exit(1)
 		}
 		for _, s := range servers {
 			fmt.Printf("%s\t%s\t%s %v\n", s["name"], s["transport"], s["command"], s["args"])
+		}
+	case "tools":
+		tools, err := c.MCPTools()
+		if err != nil {
+			logger.Error("mcp tools failed", "err", err)
+			os.Exit(1)
+		}
+		fmt.Printf("%-20s %-16s %s\n", "TOOL", "SERVER", "DESCRIPTION")
+		for _, t := range tools {
+			fmt.Printf("%-20s %-16s %s\n", t["name"], t["server"], t["description"])
+		}
+	case "calls":
+		sessionID := ""
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--session" && i+1 < len(args) {
+				sessionID = args[i+1]
+				i++
+			}
+		}
+		calls, err := c.MCPCalls(sessionID)
+		if err != nil {
+			logger.Error("mcp calls failed", "err", err)
+			os.Exit(1)
+		}
+		fmt.Printf("%-16s %-20s %-10s %-8s %s\n", "SESSION", "TOOL", "STATUS", "COST", "TIME")
+		for _, call := range calls {
+			fmt.Printf("%-16s %-20s %-10s %-8v %s\n", call["session_id"], call["tool_name"], call["status"], call["cost_usd"], call["created_at"])
 		}
 	case "policy":
 		if len(args) > 1 && args[1] == "apply" {
@@ -278,7 +362,7 @@ func runMCP(c *client.Client, args []string) {
 		} else {
 			p, err := c.MCPPolicy()
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "mcp policy error: %v\n", err)
+				logger.Error("mcp policy failed", "err", err)
 				os.Exit(1)
 			}
 			fmt.Printf("Deny: %v\n", p["deny"])
@@ -288,7 +372,7 @@ func runMCP(c *client.Client, args []string) {
 	case "generate":
 		out, err := c.MCPGenerate()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "mcp generate error: %v\n", err)
+			logger.Error("mcp generate failed", "err", err)
 			os.Exit(1)
 		}
 		fmt.Printf("Generated config: %s\n", out["path"])
@@ -297,10 +381,62 @@ func runMCP(c *client.Client, args []string) {
 	}
 }
 
+func runConfig(args []string) {
+	if len(args) == 0 {
+		data, _ := json.MarshalIndent(cfg, "", "  ")
+		fmt.Println(string(data))
+		return
+	}
+	switch args[0] {
+	case "get":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: crux config get <key>")
+			os.Exit(1)
+		}
+		switch args[1] {
+		case "api_url":
+			fmt.Println(cfg.APIURL)
+		case "default_agent":
+			fmt.Println(cfg.DefaultAgent)
+		case "default_repo":
+			fmt.Println(cfg.DefaultRepo)
+		case "output_format":
+			fmt.Println(cfg.OutputFormat)
+		default:
+			fmt.Fprintf(os.Stderr, "unknown key: %s\n", args[1])
+		}
+	case "set":
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: crux config set <key> <value>")
+			os.Exit(1)
+		}
+		switch args[1] {
+		case "api_url":
+			cfg.APIURL = args[2]
+		case "default_agent":
+			cfg.DefaultAgent = args[2]
+		case "default_repo":
+			cfg.DefaultRepo = args[2]
+		case "output_format":
+			cfg.OutputFormat = args[2]
+		default:
+			fmt.Fprintf(os.Stderr, "unknown key: %s\n", args[1])
+			os.Exit(1)
+		}
+		if err := cfg.Save(cliconfig.Path()); err != nil {
+			logger.Error("save config failed", "err", err)
+			os.Exit(1)
+		}
+		fmt.Println("Config updated.")
+	default:
+		fmt.Fprintf(os.Stderr, "usage: crux config [get|set]\n")
+	}
+}
+
 func runStats(c *client.Client) {
 	stats, err := c.Stats()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "stats error: %v\n", err)
+		logger.Error("stats failed", "err", err)
 		os.Exit(1)
 	}
 	fmt.Printf("Total sessions:   %v\n", stats["total_sessions"])
@@ -317,13 +453,13 @@ func runDaemon(args []string) {
 	switch args[0] {
 	case "start":
 		if err := startDaemon(); err != nil {
-			fmt.Fprintf(os.Stderr, "daemon start error: %v\n", err)
+			logger.Error("daemon start failed", "err", err)
 			os.Exit(1)
 		}
 		fmt.Println("Daemon started.")
 	case "stop":
 		if err := stopDaemon(); err != nil {
-			fmt.Fprintf(os.Stderr, "daemon stop error: %v\n", err)
+			logger.Error("daemon stop failed", "err", err)
 			os.Exit(1)
 		}
 		fmt.Println("Daemon stopped.")
@@ -341,7 +477,6 @@ func runDaemon(args []string) {
 
 func startDaemon() error {
 	cmd := os.Args[0]
-	// Try to find cruxd next to crux binary
 	daemonPath := strings.Replace(cmd, "crux", "cruxd", 1)
 	if _, err := os.Stat(daemonPath); os.IsNotExist(err) {
 		daemonPath = "cruxd"
@@ -357,7 +492,6 @@ func startDaemon() error {
 }
 
 func stopDaemon() error {
-	// Graceful shutdown via PID file.
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err

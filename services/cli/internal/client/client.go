@@ -155,6 +155,25 @@ func (c *Client) SessionLogs(id string) ([]map[string]interface{}, error) {
 	return out, nil
 }
 
+// SessionSummary returns generated summary.
+func (c *Client) SessionSummary(id string) (map[string]string, error) {
+	var out map[string]string
+	if err := c.do("GET", fmt.Sprintf("/sessions/%s/summary", id), nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SessionReplay returns replay data with timing.
+func (c *Client) SessionReplay(id string, speed float64) (map[string]interface{}, error) {
+	var out map[string]interface{}
+	body := map[string]interface{}{"speed": speed}
+	if err := c.do("POST", fmt.Sprintf("/sessions/%s/replay", id), body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ContinueSession continues a session with another agent.
 func (c *Client) ContinueSession(id, withAgent string) (map[string]interface{}, error) {
 	var out map[string]interface{}
@@ -169,6 +188,28 @@ func (c *Client) ContinueSession(id, withAgent string) (map[string]interface{}, 
 func (c *Client) MCPList() ([]map[string]interface{}, error) {
 	var out []map[string]interface{}
 	if err := c.do("GET", "/mcp/servers", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// MCPTools lists available MCP tools.
+func (c *Client) MCPTools() ([]map[string]interface{}, error) {
+	var out []map[string]interface{}
+	if err := c.do("GET", "/mcp/tools", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// MCPCalls returns MCP call history.
+func (c *Client) MCPCalls(sessionID string) ([]map[string]interface{}, error) {
+	path := "/mcp/calls"
+	if sessionID != "" {
+		path = fmt.Sprintf("/mcp/calls?session=%s", sessionID)
+	}
+	var out []map[string]interface{}
+	if err := c.do("GET", path, nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil

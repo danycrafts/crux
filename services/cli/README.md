@@ -25,7 +25,19 @@ Place it in your `PATH`.
 
 ## Configuration
 
-The CLI reads environment variables only:
+## Configuration
+
+CLI config is stored at `~/.crux/cli.yaml`:
+
+```yaml
+api_url: http://localhost:8080
+default_agent: claude-code
+default_repo: .
+output_format: table
+logging:
+  level: info
+  format: text
+```
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -66,17 +78,27 @@ crux sessions
 # Show session transcript
 crux logs sess_123
 
-# Replay session output
-crux replay sess_123
+# Replay session output with timing
+crux replay sess_123 --speed 2.0
+
+# Generate session summary
+crux summarize sess_123
 
 # Continue session with another agent
 crux continue sess_123 --with gemini-cli
 
 # MCP commands
 crux mcp list
+crux mcp tools
+crux mcp calls --session sess_123
 crux mcp generate
 crux mcp policy
 crux mcp policy apply
+
+# Configuration
+crux config
+crux config get api_url
+crux config set api_url http://localhost:8080
 
 # Stats
 crux stats

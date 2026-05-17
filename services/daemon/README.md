@@ -57,6 +57,13 @@ policies:
     - email.send
   require_approval:
     - github.pr.merge
+logging:
+  level: info
+  format: text
+  file: /home/user/.crux/logs/cruxd.log
+  max_size_mb: 100
+  max_backups: 3
+  max_age_days: 30
 ```
 
 ## Environment Variables
@@ -64,6 +71,16 @@ policies:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CRUX_API_PORT` | `8080` | HTTP API port |
+
+## Logging
+
+Logs are written to `~/.crux/logs/cruxd.log` by default with rotation:
+- Max size: 100 MB per file
+- Max backups: 3 files
+- Max age: 30 days
+- Compression enabled
+
+Set `logging.level` to `debug`, `info`, `warn`, or `error`.
 
 ## Usage
 

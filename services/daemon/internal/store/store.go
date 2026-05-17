@@ -86,8 +86,21 @@ CREATE TABLE IF NOT EXISTS transcripts (
 	FOREIGN KEY(session_id) REFERENCES sessions(id)
 );
 
+CREATE TABLE IF NOT EXISTS mcp_calls (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id TEXT,
+	tool_name TEXT,
+	server_name TEXT,
+	status TEXT,
+	latency_ms INTEGER,
+	cost_usd REAL,
+	created_at TEXT,
+	FOREIGN KEY(session_id) REFERENCES sessions(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_transcripts_session ON transcripts(session_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_calls_session ON mcp_calls(session_id);
 `
 	_, err := s.db.Exec(schema)
 	return err
@@ -324,4 +337,60 @@ func (s *Store) Stats(ctx context.Context) (map[string]interface{}, error) {
 		"total_tool_calls": totalToolCalls,
 		"total_cost_usd":   fmt.Sprintf("%.2f", totalCost),
 	}, nil
+}
+
+// MCPCall represents a single MCP tool invocation.
+type MCPCall struct {
+	ID         int64     `json:"id"`
+	SessionID  string    `json:"session_id"`
+	ToolName   string    `json:"tool_name"`
+	ServerName string    `json:"server_name"`
+	Status     string    `json:"status"`
+	LatencyMs  int64     `json:"latency_ms"`
+	CostUSD    float64   `json:"cost_usd"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// InsertMCPCall records an MCP call.
+func (s *Store) InsertMCPCall(ctx context.Context, c *MCPCall) error {
+	res, err := s.db.ExecContext(ctx, `INSERT INTO mcp_calls (session_id, tool_name, server_name, status, latency_ms, cost_usd, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		c.SessionID, c.ToolName, c.ServerName, c.Status, c.LatencyMs, c.CostUSD, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return err
+	}
+	c.ID, _ = res.LastInsertId()
+	return nil
+}
+
+// ListMCPCalls returns MCP calls for a session or all if sessionID is empty.
+func (s *Store) ListMCPCalls(ctx context.Context, sessionID string) ([]MCPCall, error) {
+	var rows *sql.Rows
+	var err error
+	if sessionID != "" {
+		rows, err = s.db.QueryContext(ctx, `SELECT id, session_id, tool_name, server_name, status, latency_ms, cost_usd, created_at FROM mcp_calls WHERE session_id=? ORDER BY id DESC`, sessionID)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `SELECT id, session_id, tool_name, server_name, status, latency_ms, cost_usd, created_at FROM mcp_calls ORDER BY id DESC LIMIT 100`)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []MCPCall
+	for rows.Next() {
+		var c MCPCall
+		var ts string
+		if err := rows.Scan(&c.ID, &c.SessionID, &c.ToolName, &c.ServerName, &c.Status, &c.LatencyMs, &c.CostUSD, &ts); err != nil {
+			return nil, err
+		}
+		c.CreatedAt, _ = time.Parse(time.RFC3339, ts)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// UpdateSessionSummary updates just the summary field.
+func (s *Store) UpdateSessionSummary(ctx context.Context, sessionID, summary string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET summary=? WHERE id=?`, summary, sessionID)
+	return err
 }

@@ -25,6 +25,18 @@ Place it in your `PATH`.
 
 ## Configuration
 
+Config stored at `~/.crux/dashboard.yaml`:
+
+```yaml
+port: 3001
+api_url: http://localhost:8080
+refresh_interval: 10
+logging:
+  level: info
+  format: text
+  file: /home/user/.crux/logs/dashboard.log
+```
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CRUX_DASHBOARD_PORT` | `3001` | Dashboard HTTP port |

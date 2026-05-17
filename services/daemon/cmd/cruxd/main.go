@@ -3,13 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
 
+	"github.com/danycrafts/crux/pkg/logger"
 	"github.com/danycrafts/crux/services/daemon/internal/api"
 	"github.com/danycrafts/crux/services/daemon/internal/config"
 	"github.com/danycrafts/crux/services/daemon/internal/store"
@@ -23,11 +24,20 @@ func main() {
 
 	cfg, err := config.Load(config.ConfigPath())
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		logger.Fatalf("load config: %v", err)
 	}
 	if err := cfg.EnsureDirs(); err != nil {
-		log.Fatalf("ensure dirs: %v", err)
+		logger.Fatalf("ensure dirs: %v", err)
 	}
+
+	// Setup logging
+	logCfg := cfg.Logging
+	if logCfg.File == "" {
+		logCfg.File = filepath.Join(cfg.DataDir, "logs", "cruxd.log")
+	}
+	logger.Init(logCfg)
+	logger.SetDefault()
+	logger.Info("cruxd starting", "version", "0.1.0", "data_dir", cfg.DataDir)
 
 	// PID file
 	pidPath := config.PIDPath()
@@ -36,9 +46,10 @@ func main() {
 
 	st, err := store.New(config.DBPath())
 	if err != nil {
-		log.Fatalf("open store: %v", err)
+		logger.Fatalf("open store: %v", err)
 	}
 	defer st.Close()
+	logger.Info("store opened", "path", config.DBPath())
 
 	addr := fmt.Sprintf(":%d", cfg.APIPort)
 	if p := os.Getenv("CRUX_API_PORT"); p != "" {
@@ -47,17 +58,18 @@ func main() {
 
 	srv := api.NewServer(cfg, st)
 	go func() {
-		log.Printf("cruxd listening on %s", addr)
+		logger.Info("api listening", "addr", addr)
 		if err := srv.Start(addr); err != nil {
-			log.Printf("server error: %v", err)
+			logger.Error("server error", "err", err)
 		}
 	}()
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
-	log.Println("shutting down...")
+	logger.Info("shutting down")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Stop(ctx)
+	logger.Info("shutdown complete")
 }
