@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crux Dashboard</title>
+<style>
+  :root{ --bg:#0b0c0f; --panel:#13161b; --text:#e1e3e6; --muted:#8b929d; --accent:#3b82f6; --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; }
+  *{ box-sizing:border-box }
+  body{ margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica Neue, Arial; background:var(--bg); color:var(--text); }
+  header{ display:flex; align-items:center; justify-content:space-between; padding:16px 24px; border-bottom:1px solid #1f232b; background:var(--panel); position:sticky; top:0; z-index:10; }
+  header h1{ margin:0; font-size:18px; letter-spacing:.2px; }
+  .grid{ display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:16px; padding:24px; }
+  .card{ background:var(--panel); border:1px solid #1f232b; border-radius:12px; padding:16px; }
+  .card h2{ margin:0 0 10px; font-size:14px; text-transform:uppercase; color:var(--muted); letter-spacing:.4px; }
+  .metric{ font-size:28px; font-weight:700; }
+  .table{ width:100%; border-collapse:collapse; font-size:13px; }
+  .table th{ text-align:left; padding:8px; color:var(--muted); border-bottom:1px solid #1f232b; }
+  .table td{ padding:8px; border-bottom:1px solid #1a1d24; }
+  .badge{ display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:600; }
+  .badge.running{ background:rgba(34,197,94,.15); color:var(--ok); }
+  .badge.exited{ background:rgba(139,146,157,.15); color:var(--muted); }
+  .badge.error{ background:rgba(239,68,68,.15); color:var(--bad); }
+  .actions{ display:flex; gap:8px; padding:0 24px 24px; }
+  button{ background:var(--accent); color:#fff; border:none; padding:8px 12px; border-radius:8px; cursor:pointer; font-weight:600; }
+  button.secondary{ background:#1f232b; color:var(--text); }
+  pre{ background:#0b0c0f; padding:12px; border-radius:8px; overflow:auto; font-size:12px; border:1px solid #1f232b; }
+  a{ color:var(--accent); text-decoration:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Crux Control</h1>
+  <div id="conn" class="badge" style="background:rgba(139,146,157,.15);color:var(--muted)">Connecting...</div>
+</header>
+
+<div class="grid">
+  <div class="card">
+    <h2>Total Sessions</h2>
+    <div class="metric" id="totalSessions">-</div>
+  </div>
+  <div class="card">
+    <h2>Active Sessions</h2>
+    <div class="metric" id="activeSessions">-</div>
+  </div>
+  <div class="card">
+    <h2>Tool Calls</h2>
+    <div class="metric" id="toolCalls">-</div>
+  </div>
+  <div class="card">
+    <h2>Est. Cost</h2>
+    <div class="metric" id="totalCost">-</div>
+  </div>
+</div>
+
+<div class="actions">
+  <button onclick="refresh()">Refresh</button>
+  <button class="secondary" onclick="discover()">Discover Agents</button>
+</div>
+
+<div class="grid" style="grid-template-columns: 1fr">
+  <div class="card">
+    <h2>Sessions</h2>
+    <table class="table" id="sessionsTable">
+      <thead><tr><th>Session</th><th>Agent</th><th>Status</th><th>Cost</th><th>Tools</th><th>Started</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="grid" style="grid-template-columns: 1fr">
+  <div class="card">
+    <h2>Agents</h2>
+    <table class="table" id="agentsTable">
+      <thead><tr><th>ID</th><th>Name</th><th>Provider</th><th>Command</th><th>Status</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+let API = '';
+fetch('/api/config').then(r=>r.json()).then(c=>{ API = c.api_url; refresh(); }).catch(()=>{ API='http://localhost:8080'; refresh(); });
+
+function badge(status){
+  const s = (status||'').toLowerCase();
+  if(s==='running') return '<span class="badge running">'+status+'</span>';
+  if(s==='exited') return '<span class="badge exited">'+status+'</span>';
+  return '<span class="badge error">'+status+'</span>';
+}
+
+async function refresh(){
+  try{
+    const stats = await fetch(API+'/stats').then(r=>r.json());
+    document.getElementById('totalSessions').textContent = stats.total_sessions ?? '-';
+    document.getElementById('activeSessions').textContent = stats.active_sessions ?? '-';
+    document.getElementById('toolCalls').textContent = stats.total_tool_calls ?? '-';
+    document.getElementById('totalCost').textContent = '$' + (stats.total_cost_usd ?? '-');
+    document.getElementById('conn').textContent = 'Connected';
+    document.getElementById('conn').style.color = 'var(--ok)';
+  }catch(e){
+    document.getElementById('conn').textContent = 'Disconnected';
+    document.getElementById('conn').style.color = 'var(--bad)';
+  }
+
+  try{
+    const sessions = await fetch(API+'/sessions?limit=50').then(r=>r.json());
+    const tb = document.querySelector('#sessionsTable tbody');
+    tb.innerHTML = sessions.map(s=>`<tr>
+      <td><a href="#" onclick="showLogs('${s.id}');return false;">${s.id}</a></td>
+      <td>${s.agent_id}</td>
+      <td>${badge(s.status)}</td>
+      <td>$${s.cost_usd ?? 0}</td>
+      <td>${s.tool_calls ?? 0}</td>
+      <td>${s.started_at ? new Date(s.started_at).toLocaleString() : '-'}</td>
+    </tr>`).join('');
+  }catch(e){}
+
+  try{
+    const agents = await fetch(API+'/agents').then(r=>r.json());
+    const tb = document.querySelector('#agentsTable tbody');
+    tb.innerHTML = agents.map(a=>`<tr>
+      <td>${a.id}</td>
+      <td>${a.name}</td>
+      <td>${a.provider}</td>
+      <td><code>${a.command}</code></td>
+      <td>${badge(a.status)}</td>
+    </tr>`).join('');
+  }catch(e){}
+}
+
+async function discover(){
+  try{
+    await fetch(API+'/discover',{method:'POST'});
+    await refresh();
+  }catch(e){ alert('Discover failed: '+e); }
+}
+
+async function showLogs(id){
+  try{
+    const lines = await fetch(API+'/sessions/'+id+'/logs').then(r=>r.json());
+    const text = lines.map(l=> (l.is_input?'[IN] ':'[OUT] ')+l.line).join('');
+    const win = window.open('','_blank','width=800,height=600');
+    win.document.write('<pre style="background:#0b0c0f;color:#e1e3e6;padding:12px;font:12px monospace">'+text.replace(/</g,'&lt;')+'</pre>');
+  }catch(e){ alert('Logs failed: '+e); }
+}
+
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>
