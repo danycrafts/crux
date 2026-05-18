@@ -69,7 +69,7 @@ make install
 # Initialize and start the daemon
 crux init
 
-# Discover installed agents
+# Deep discover agents, sessions, stats, MCP servers
 crux discover
 
 # Run an agent in an interactive PTY

@@ -202,13 +202,14 @@ func (s *Store) UpdateSession(ctx context.Context, sess *Session) error {
 func (s *Store) GetSession(ctx context.Context, id string) (*Session, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT id, agent_id, project, repo_path, status, started_at, ended_at, cost_usd, tool_calls, fallbacks, summary, continuation FROM sessions WHERE id=?`, id)
 	var sess Session
-	var started, ended string
+	var started string
+	var ended sql.NullString
 	if err := row.Scan(&sess.ID, &sess.AgentID, &sess.Project, &sess.RepoPath, &sess.Status, &started, &ended, &sess.CostUSD, &sess.ToolCalls, &sess.Fallbacks, &sess.Summary, &sess.Continuation); err != nil {
 		return nil, err
 	}
 	sess.StartedAt, _ = time.Parse(time.RFC3339, started)
-	if ended != "" {
-		t, _ := time.Parse(time.RFC3339, ended)
+	if ended.Valid && ended.String != "" {
+		t, _ := time.Parse(time.RFC3339, ended.String)
 		sess.EndedAt = &t
 	}
 	return &sess, nil
@@ -228,13 +229,14 @@ func (s *Store) ListSessions(ctx context.Context, limit int) ([]Session, error) 
 	var out []Session
 	for rows.Next() {
 		var sess Session
-		var started, ended string
+		var started string
+		var ended sql.NullString
 		if err := rows.Scan(&sess.ID, &sess.AgentID, &sess.Project, &sess.RepoPath, &sess.Status, &started, &ended, &sess.CostUSD, &sess.ToolCalls, &sess.Fallbacks, &sess.Summary, &sess.Continuation); err != nil {
 			return nil, err
 		}
 		sess.StartedAt, _ = time.Parse(time.RFC3339, started)
-		if ended != "" {
-			t, _ := time.Parse(time.RFC3339, ended)
+		if ended.Valid && ended.String != "" {
+			t, _ := time.Parse(time.RFC3339, ended.String)
 			sess.EndedAt = &t
 		}
 		out = append(out, sess)

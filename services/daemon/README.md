@@ -100,7 +100,7 @@ crux daemon stop
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check |
-| POST | `/discover` | Discover agents and MCP servers |
+| POST | `/discover` | Deep discovery: agents, MCP servers, sessions, stats, configs |
 | GET | `/agents` | List registered agents |
 | POST | `/agents/{id}/run` | Start an agent session |
 | POST | `/sessions/{id}/input` | Send input to a session (HTTP) |

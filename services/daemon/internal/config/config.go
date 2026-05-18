@@ -12,28 +12,26 @@ import (
 
 // Config is the daemon configuration.
 type Config struct {
-	APIPort       int            `yaml:"api_port"`
-	DataDir       string         `yaml:"data_dir"`
-	AgentRegistry *AgentRegistry `yaml:"agents,omitempty"`
-	MCP           *MCPConfig     `yaml:"mcp,omitempty"`
-	Policies      *Policies      `yaml:"policies,omitempty"`
-	Logging       logger.Config  `yaml:"logging"`
+	APIPort  int                       `yaml:"api_port"`
+	DataDir  string                    `yaml:"data_dir"`
+	Agents   map[string]AgentDef       `yaml:"agents,omitempty"`
+	MCP      *MCPConfig                `yaml:"mcp,omitempty"`
+	Policies *Policies                 `yaml:"policies,omitempty"`
+	Logging  logger.Config             `yaml:"logging"`
 }
 
-// AgentRegistry holds known agents.
-type AgentRegistry struct {
-	Agents map[string]AgentDef `yaml:"agents"`
-}
-
-// AgentDef defines a single agent.
+// AgentDef defines a single agent with discovered metadata.
 type AgentDef struct {
-	Type         string   `yaml:"type"`
-	Command      string   `yaml:"command"`
-	Path         string   `yaml:"path,omitempty"`
-	Capabilities []string `yaml:"capabilities,omitempty"`
-	Owner        string   `yaml:"owner,omitempty"`
-	Provider     string   `yaml:"provider,omitempty"`
-	SupportsMCP  bool     `yaml:"supports_mcp,omitempty"`
+	Type         string                 `yaml:"type"`
+	Command      string                 `yaml:"command"`
+	Path         string                 `yaml:"path,omitempty"`
+	Capabilities []string               `yaml:"capabilities,omitempty"`
+	Owner        string                 `yaml:"owner,omitempty"`
+	Provider     string                 `yaml:"provider,omitempty"`
+	SupportsMCP  bool                   `yaml:"supports_mcp,omitempty"`
+	DataDir      string                 `yaml:"data_dir,omitempty"`
+	Version      string                 `yaml:"version,omitempty"`
+	Config       map[string]interface{} `yaml:"config,omitempty"`
 }
 
 // MCPConfig holds gateway configuration.
@@ -63,9 +61,7 @@ func Default() *Config {
 	return &Config{
 		APIPort: 8080,
 		DataDir: dir,
-		AgentRegistry: &AgentRegistry{
-			Agents: make(map[string]AgentDef),
-		},
+		Agents: make(map[string]AgentDef),
 		MCP: &MCPConfig{
 			Port:    3000,
 			Servers: make(map[string]MCPServer),
@@ -101,8 +97,8 @@ func Load(path string) (*Config, error) {
 	if cfg.APIPort == 0 {
 		cfg.APIPort = 8080
 	}
-	if cfg.AgentRegistry == nil {
-		cfg.AgentRegistry = &AgentRegistry{Agents: make(map[string]AgentDef)}
+	if cfg.Agents == nil {
+		cfg.Agents = make(map[string]AgentDef)
 	}
 	if cfg.MCP == nil {
 		cfg.MCP = &MCPConfig{Port: 3000, Servers: make(map[string]MCPServer)}

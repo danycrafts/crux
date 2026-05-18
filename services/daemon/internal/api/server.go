@@ -100,7 +100,69 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 			Status:       "available",
 		})
 	}
-	respondJSON(w, map[string]interface{}{"agents": found, "mcp": discovery.DiscoverMCP(r.Context())})
+
+	// Deep discovery: parse agent local data
+	agentData := discovery.DiscoverAllAgentData()
+	for _, ad := range agentData {
+		agentID := slug(ad.Name)
+		// Update agent registry with discovered metadata
+		s.cfg.Agents[agentID] = config.AgentDef{
+			Type:         "cli",
+			Command:      ad.Command,
+			Path:         ad.Command,
+			Capabilities: ad.Capabilities,
+			Provider:     ad.Provider,
+			SupportsMCP:  len(ad.MCPServers) > 0,
+			DataDir:      ad.DataDir,
+			Version:      ad.Version,
+			Config:       ad.Config,
+		}
+
+		// Ingest discovered sessions
+		for _, sess := range ad.Sessions {
+			existing, err := s.store.GetSession(r.Context(), sess.ID)
+			if err == nil && existing != nil {
+				continue // skip existing
+			}
+			status := sess.Status
+			if status == "" {
+				status = "completed"
+			}
+			cruxSess := &store.Session{
+				ID:        sess.ID,
+				AgentID:   agentID,
+				Project:   sess.Project,
+				RepoPath:  sess.RepoPath,
+				Status:    status,
+				StartedAt: sess.StartedAt,
+				Summary:   sess.Summary,
+			}
+			if sess.EndedAt != nil {
+				cruxSess.EndedAt = sess.EndedAt
+			}
+			_ = s.store.CreateSession(r.Context(), cruxSess)
+		}
+
+		// Ingest discovered MCP servers
+		for _, mcp := range ad.MCPServers {
+			if mcp.Name == "" {
+				continue
+			}
+			s.cfg.MCP.Servers[mcp.Name] = config.MCPServer{
+				Transport: mcp.Transport,
+				Command:   mcp.Command,
+				Args:      mcp.Args,
+				URL:       mcp.URL,
+			}
+		}
+	}
+	_ = s.cfg.Save(config.ConfigPath())
+
+	respondJSON(w, map[string]interface{}{
+		"agents":    found,
+		"mcp":       discovery.DiscoverMCP(r.Context()),
+		"agent_data": agentData,
+	})
 }
 
 func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
